@@ -1,0 +1,18 @@
+[package]
+name = "being32"
+version = "1.3.3"
+edition = "2021"
+authors = ["The Being32 Architect <being32@proton.me>"]
+description = "A dynamically persistent synthetic agent based on critical homeostatic regulation and active inference"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/being32/being32"
+keywords = ["active-inference", "homeostasis", "dynamical-systems", "artificial-life", "criticality"]
+categories = ["science", "simulation"]
+rust-version = "1.70"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[profile.test]
+opt-level = 2
