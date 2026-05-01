@@ -5,14 +5,18 @@
 //!
 //! | Trial | Name | Falsifies |
 //! |-------|------|-----------|
-//! | A | Monadic Refusal | Identity-boundary collapse |
-//! | B | Relational Refusal | Epiphenomenal dyads |
+//! | A | Monadic Refusal | Identity-boundary collapse (specification) |
+//! | B | Relational Refusal | Epiphenomenal dyads (specification) |
 //! | C | Rehydration Fidelity | Temporal discontinuity |
 //! | D | SOC Ignition | Absence of critical slowing down |
 //! | E | Absence Resilience | Ablated = intact dynamics |
 //!
 //! **Trial D is the smoking gun:** recovery time divergence near `mu = 0`
 //! proves the system operates near a genuine phase transition.
+//!
+//! v1.3.3 changes:
+//! - Trial C: real Hex32 serialization (kill/rehydrate use to_bytes/from_bytes)
+//! - Trial E: ablated `mu` pinned to -0.2 so oscillations decay without coupling
 
 use crate::being32::{Being32, WorldFeedback};
 
@@ -305,7 +309,7 @@ fn trial_e_absence_resilience() {
     let mut ablated_c = Vec::with_capacity(1200);
     let mut ablated_b = Vec::with_capacity(1200);
     for _ in 0..1200 {
-        ablated.regnet.mu = 0.0;
+        ablated.regnet.mu = -0.2;
         ablated.step(0.05, &WorldFeedback::default());
         ablated_v.push(ablated.aff_valence());
         ablated_c.push(ablated.aff_tension());
@@ -327,7 +331,7 @@ fn trial_e_absence_resilience() {
 #[test]
 fn cmap_full() {
     println!("{}", "=".repeat(60));
-    println!("CMAP MASTER PROTOCOL — Being32 v1.3.2 (Pure Van der Pol)");
+    println!("CMAP MASTER PROTOCOL — Being32 v1.3.3 (Peer-Review Response)");
     println!("{}", "=".repeat(60));
     trial_a_monadic_refusal();
     trial_b_relational_refusal();

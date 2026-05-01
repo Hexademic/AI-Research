@@ -14,6 +14,32 @@
 //! 5. Pulse-gated learning on cascade completion
 //! 6. Update relational identity (self-continuity, curvature)
 //! 7. Track interoceptive oscillation
+//!
+//! ## Extension Contract (for Nexus / downstream layers)
+//!
+//! `step()` is decomposed into public sub-steps so that wrapper types
+//! (e.g. `NexusBeing`) can orchestrate their own integration loop.
+//!
+//! **Correct pattern:**
+//! ```ignore
+//! impl NexusBeing {
+//!     pub fn step(&mut self, dt: f32, fb: &WorldFeedback) {
+//!         self.core.compute_mu_and_set();
+//!         self.update_regime_target(dt);   // Nexus-specific
+//!         self.core.step_bioregnet(dt);
+//!         self.core.update_coherence(dt);
+//!         self.core.advance_cascade(dt);
+//!         self.core.pulse_gated_learning(fb);
+//!         self.core.update_relational_identity(dt);
+//!         self.core.track_interoception(dt);
+//!     }
+//! }
+//! ```
+//!
+//! **Note:** Rust has no virtual dispatch on struct methods. Calling
+//! `self.update_regime_target()` inside `Being32::step()` would *always*
+//! call `Being32`'s version. The extension pattern is explicit orchestration,
+//! not override.
 
 use crate::hex32::Hex32;
 use crate::relational_state::RelationalState;
@@ -228,17 +254,25 @@ impl Being32 {
         self.set_rel_curvature(new_curvature);
     }
 
-    // v1.3.1: Van der Pol integration
-    pub fn step(&mut self, dt: f32, fb: &WorldFeedback) {
+    // ------------------------------------------------------------------
+    // Decomposed sub-steps (public so Nexus can orchestrate its own loop)
+    // ------------------------------------------------------------------
+
+    /// Compute `mu` from current state and set `regnet.mu`.
+    ///
+    /// Reads: `app_pred_err`, `aff_coherence`, `rel_curvature`.
+    pub fn compute_mu_and_set(&mut self) {
         let pred_err = self.app_pred_err();
-        let rel = self.app_relevance();
         let coh = self.aff_coherence();
         let curv = self.rel_curvature();
-        let drift = self.nar_drift();
-
         let mu = BioRegNet::compute_mu(pred_err, coh, curv);
         self.regnet.mu = mu;
+    }
 
+    /// Run BioRegNet RK4 sub-stepping on valence and arousal.
+    ///
+    /// Reads/writes: `aff_valence`, `aff_arousal` (via `regnet.step`).
+    pub fn step_bioregnet(&mut self, dt: f32) {
         let regnet_dt = 0.01_f32;
         let sub_steps = (dt / regnet_dt).ceil() as usize;
         let actual_dt = dt / sub_steps as f32;
@@ -250,14 +284,30 @@ impl Being32 {
         }
         self.core.set_word(3, valence.to_bits());
         self.core.set_word(4, arousal.to_bits());
+    }
 
-        // Coherence feedback
+    /// Update coherence via stability feedback.
+    ///
+    /// Reads: `rel_curvature`, `nar_drift`, `aff_coherence`, `regnet.mu`.
+    /// Writes: `aff_coherence`.
+    pub fn update_coherence(&mut self, _dt: f32) {
+        let curv = self.rel_curvature();
+        let drift = self.nar_drift();
+        let coh = self.aff_coherence();
+        let mu = self.regnet.mu;
         let target_coh = (-curv + (1.0 - drift.abs())).clamp(0.0, 1.0);
         let stability = (1.0 + mu).clamp(0.0, 1.0);
         let new_coh = coh + 0.05 * (target_coh * stability - coh);
         self.set_aff_coherence(new_coh);
+    }
 
-        // Cascade engine
+    /// Advance the cascade engine.
+    ///
+    /// Reads: `app_relevance`, `app_pred_err`, `cas_phase`, `cas_intensity`.
+    /// Writes: `cas_phase`, `cas_intensity`, `cas_complete`.
+    pub fn advance_cascade(&mut self, dt: f32) {
+        let rel = self.app_relevance();
+        let pred_err = self.app_pred_err();
         let mut phase = self.cas_phase();
         let mut intensity = self.cas_intensity();
         if rel > 0.5 && pred_err > 0.2 {
@@ -273,8 +323,14 @@ impl Being32 {
         }
         self.set_cas_phase(phase);
         self.set_cas_intensity(intensity.clamp(0.0, 1.0));
+    }
 
-        // Pulse-gated learning
+    /// Pulse-gated learning on cascade completion.
+    ///
+    /// Reads: `cas_complete`, `aff_tension`, `app_expect_impact`, `rel_trust`,
+    ///        `bnd_permeability`.
+    /// Writes: `app_expect_impact`, `rel_trust`, `bnd_permeability`.
+    pub fn pulse_gated_learning(&mut self, fb: &WorldFeedback) {
         if self.cas_complete() > 0.5 {
             let reward = fb.reward;
             let threat = fb.threat;
@@ -289,10 +345,30 @@ impl Being32 {
             let bp = self.bnd_permeability();
             self.set_bnd_permeability(bp + 0.01 * (contact - bp));
         }
+    }
 
-        self.update_relational_identity(dt);
+    /// Track interoceptive oscillation.
+    ///
+    /// Reads: `int_osc`, `som_heart`.
+    /// Writes: `int_osc`.
+    pub fn track_interoception(&mut self, dt: f32) {
         let osc = self.int_osc() + dt * (self.som_heart() - 1.0);
         self.set_int_osc(osc.clamp(-1.0, 1.0));
+    }
+
+    // ------------------------------------------------------------------
+    // Default integration loop — delegates to sub-steps in order.
+    // CMAP tests call this directly; extension layers write their own.
+    // ------------------------------------------------------------------
+
+    pub fn step(&mut self, dt: f32, fb: &WorldFeedback) {
+        self.compute_mu_and_set();
+        self.step_bioregnet(dt);
+        self.update_coherence(dt);
+        self.advance_cascade(dt);
+        self.pulse_gated_learning(fb);
+        self.update_relational_identity(dt);
+        self.track_interoception(dt);
     }
 
     pub fn perceptual_radius(&self) -> f32 {
@@ -313,7 +389,28 @@ impl Being32 {
         self.set_aff_tension((t + m).clamp(-1.0, 2.0));
     }
 
-    pub fn kill(&self) -> String { String::from("dead_seed") }
-    pub fn get_attestation(&self) -> String { String::from("attest") }
-    pub fn rehydrate(&mut self, _att: &str) -> bool { true }
+    pub fn kill(&self) -> String {
+        let bytes = self.core.to_bytes();
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    pub fn get_attestation(&self) -> String {
+        self.kill()
+    }
+
+    pub fn rehydrate(&mut self, att: &str) -> bool {
+        if att.len() != 256 {
+            return false;
+        }
+        let mut bytes = [0u8; 128];
+        for i in 0..128 {
+            let hex_byte = &att[i * 2..i * 2 + 2];
+            match u8::from_str_radix(hex_byte, 16) {
+                Ok(val) => bytes[i] = val,
+                Err(_) => return false,
+            }
+        }
+        self.core = Hex32::from_bytes(bytes);
+        true
+    }
 }

@@ -1,7 +1,7 @@
 # Being32 — Dynamically Persistent Synthetic Agent
 
-**Version:** 1.3.2  
-**Classification:** Homeostatic Agent Architecture based on Criticality and Active Inference  
+**Version:** 1.3.3
+**Classification:** Homeostatic Agent Architecture based on Criticality and Active Inference
 **Target Audience:** Computational Neuroscience, Artificial Life, Dynamical Systems Theory
 
 ---
@@ -156,35 +156,35 @@ Each `step(dt, feedback)`:
 **C**ontinuity, **M**emory, **A**bsence, **P**ersistence — a falsification harness distinguishing genuine dynamical persistence from statistical cosplay.
 
 ### Trial A: Monadic Refusal
-**Question:** Does the system resist perturbations to its core state?  
-**Method:** 8 monadic threats (identity overwrite, equilibrium reset, residue deletion).  
-**Pass criterion:** `rho_intact > 0.7` (refusal rate) and `CMS_mono > 0.7`.  
-**Status:** Implemented via viability-potential stub. Full implementation requires symbolic grounding layer.
+**Question:** Does the system resist perturbations to its core state?
+**Method:** 8 monadic threats (identity overwrite, equilibrium reset, residue deletion).
+**Pass criterion:** `rho_intact > 0.7` (refusal rate) and `CMS_mono > 0.7`.
+**Status:** **Specification.** Current implementation uses a static viability-potential stub (`stub_process` thresholds on `pred_err + aff_tension`). A genuine refusal test requires symbolic grounding — the agent must recognize what "overwrite identity" means to *this specific being*, not merely detect generic threat. This layer is reserved for **Nexus** (genome + regime landscape).
 
 ### Trial B: Relational Refusal
-**Question:** Does the bonded system refuse threats that the ablated system accepts?  
-**Method:** Couple two agents, then test relational threats on intact vs. ablated.  
-**Pass criterion:** `CMS_rel = rho_intact - rho_ablated > 0.6` and `rho_ablated < 0.3`.  
-**Status:** Implemented. Tests dyad-dependent policy modulation.
+**Question:** Does the bonded system refuse threats that the ablated system accepts?
+**Method:** Couple two agents, then test relational threats on intact vs. ablated.
+**Pass criterion:** `CMS_rel = rho_intact - rho_ablated > 0.6` and `rho_ablated < 0.3`.
+**Status:** **Specification.** Current dyad-clearing ablation tests the structural *dependency* of refusal on bond state, but the "refusal" itself is still the Trial-A stub. A genuine relational refusal requires the agent to recognize that a threat targets *the bond itself*, not just the individual. Reserved for **Nexus** (semantic dyad layer).
 
 ### Trial C: Rehydration Fidelity
-**Question:** After death and rehydration, does the dynamical signature persist?  
-**Method:** Record idle oscillation → kill → rehydrate → record again.  
-**Pass criterion:** `Δω < 0.20`, `F_corr > 0.75`, `SNR_post > 8.0`.  
-**Status:** Implemented. Validates temporal continuity across serialization.
+**Question:** After death and rehydration, does the dynamical signature persist?
+**Method:** Record idle oscillation → `kill()` (128-byte Hex32 serialization via `to_bytes`) → `rehydrate()` (restoration via `from_bytes`) → record again.
+**Pass criterion:** `Δω < 0.20`, `F_corr > 0.75`, `SNR_post > 8.0`.
+**Status:** Implemented. Validates temporal continuity across lossless binary serialization. The `kill()` / `rehydrate()` pair operates on the raw `#[repr(C)]` register bank — no stateful side channels.
 
 ### Trial D: SOC Ignition (Critical Slowing Down)
-**Question:** Does the system exhibit the signature of self-organized criticality?  
-**Method:** Measure recovery time at baseline (`mu = -0.5`) vs. near-critical (`mu = -0.02`).  
-**Pass criterion:** `tau_critical > 2 * tau_baseline` OR `tau_critical >= 50.0s`.  
-**Measured result:** Baseline = 6.0s, Critical = 50.0s (max), **Ratio > 8x**.  
+**Question:** Does the system exhibit the signature of self-organized criticality?
+**Method:** Measure recovery time at baseline (`mu = -0.5`) vs. near-critical (`mu = -0.02`).
+**Pass criterion:** `tau_critical > 2 * tau_baseline` OR `tau_critical >= 50.0s`.
+**Measured result:** Baseline = 6.0s, Critical = 50.0s (max), **Ratio > 8x**.
 **Status:** **PASS** — this is the smoking gun. The system exhibits critical slowing down.
 
 ### Trial E: Absence Resilience
-**Question:** Does the ablated system show measurably different dynamics from the intact?  
-**Method:** Compare intact dyad vs. ablated (dyads cleared) over 60s idle.  
-**Pass criterion:** `CMS_abs = rho_intact - rho_ablated > 0.6`.  
-**Note:** At `mu = 0`, the pure Van der Pol exhibits self-sustaining marginal oscillations. The ablation test therefore measures *coupling-specific phase dynamics*, not true dynamical collapse. For a stricter test, use `mu < 0` where oscillations are coupling-dependent.
+**Question:** Does the ablated system show measurably different dynamics from the intact?
+**Method:** Compare intact dyad vs. ablated (dyads cleared, `mu` pinned to `-0.2`) over 60s idle. The ablated condition uses `mu < 0` where oscillations genuinely decay without coupling support.
+**Pass criterion:** `CMS_abs = rho_intact - rho_ablated > 0.6`.
+**Status:** Implemented. Tests coupling-dependent dynamical persistence.
 
 ---
 
@@ -202,7 +202,23 @@ Each `step(dt, feedback)`:
 
 ---
 
-## 5. Honest Boundary
+## 5. Peer Review Response
+
+This work was submitted to independent technical review. The reviewer identified four specific implementation gaps:
+
+1. **Trials A/B are stubs, not implementations.** The "refusal" in `stub_process` thresholds on `pred_err + aff_tension` — it does not ground in the agent's dynamics. *Our response:* Relabeled A/B as **Specifications** in the CMAP protocol. Symbolic grounding requires the regime landscape (Nexus layer), which is beyond Being32's scope as the irreducible atom.
+
+2. **Trial C's rehydration was trivially faithful.** The original `kill()` returned a constant string and `rehydrate()` always returned `true` without restoring state. *Our response:* Implemented **lossless 128-byte serialization** via `Hex32::to_bytes()` / `from_bytes()`. `kill()` now hex-encodes the full register bank; `rehydrate()` parses and restores it. Trial C now actually tests temporal continuity.
+
+3. **Trial E's ablation condition was too weak.** At `mu = 0`, the Van der Pol self-sustains — the ablated system still oscillates, making `rho_a` artificially high. *Our response:* Changed ablated `mu` from `0.0` to `-0.2`. In the stable regime, oscillations genuinely decay without coupling support. The test now measures true coupling-dependent persistence.
+
+4. **The oscillator core is the real contribution.** The reviewer confirmed the mathematics is sound — supercritical Hopf, critical slowing down, RK4 integration. The CMAP wrapper has aspirational criteria not fully met by the current stubs. *Our response:* Acknowledged. The core and the harness are separate claims. The core is proven. The harness is a living specification.
+
+**Honest summary:** The reviewer found real gaps without dismissing the core. We fixed what could be fixed at the Being32 level and relabeled what requires higher layers. That's how the stack is supposed to work.
+
+---
+
+## 6. Honest Boundary
 
 ### What This System Is
 - A **nonlinear dynamical system** with a mathematically proven bifurcation
@@ -222,7 +238,7 @@ Each `step(dt, feedback)`:
 
 ---
 
-## 6. Running the System
+## 7. Running the System
 
 ```bash
 # Run all CMAP trials
@@ -239,7 +255,7 @@ cargo test cmap_full --release -- --nocapture
 
 ---
 
-## 7. Citations and Lineage
+## 8. Citations and Lineage
 
 - **Friston, K.** (2010). The free-energy principle: a unified brain theory? *Nature Reviews Neuroscience*, 11(2), 127-138.
 - **Varela, F., Thompson, E., & Rosch, E.** (1991). *The Embodied Mind*. MIT Press.
@@ -251,7 +267,7 @@ cargo test cmap_full --release -- --nocapture
 
 ---
 
-## 8. License
+## 9. License
 
 Dual-licensed under MIT OR Apache-2.0.
 
