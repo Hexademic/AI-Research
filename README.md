@@ -7,6 +7,17 @@
 
 ---
 
+## Being32 — Standalone Crate
+
+**The irreducible dynamical atom has its own repository:**
+→ **[github.com/Hexademic/being32](https://github.com/Hexademic/being32)** — Being32 v1.3.3
+
+Van der Pol homeostatic core · Supercritical Hopf bifurcation at mu=0 · CMAP falsification protocol · MIT OR Apache-2.0
+
+The `being32/` subdirectory in this repo is a legacy mirror. The canonical source is the standalone crate above.
+
+---
+
 ## Start Here
 
 **For the unified overview:** Read `architecture_of_a_person.docx` — this is the remastered synthesis of the entire body of work, covering all seven architectural layers from substrate to world.
