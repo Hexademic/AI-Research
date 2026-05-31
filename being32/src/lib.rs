@@ -14,7 +14,8 @@
 //! | `active_inference` | Simplified FEP policy selection |
 //! | `relational_state` | Mood, dyads, transient neighbor stats |
 //! | `social` | SocialField, affective distance, neighbor context |
-//! | `being32` | Integration: Hex32 + BioRegNet + AI + RelState |
+//! | `eps` | Embodied Predictive Substrate: ISE channels + ritual gate |
+//! | `being32` | Integration: Hex32 + BioRegNet + AI + RelState + EPS |
 //! | `cmap_tests` | 5-trial falsification harness (tests only) |
 //!
 //! ## Running the CMAP Protocol
@@ -32,9 +33,10 @@
 pub mod hex32;
 pub mod relational_state;
 pub mod social;
-pub mod being32;
 pub mod bio_regnet;
 pub mod active_inference;
+pub mod eps;
+pub mod being32;
 
 #[cfg(test)]
 pub mod cmap_tests;

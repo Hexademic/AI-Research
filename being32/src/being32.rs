@@ -1,19 +1,21 @@
-//! Being32 — Integration of Hex32 Substrate, BioRegNet, Active Inference, and Relational State
+//! Being32 — Integration of Hex32 Substrate, BioRegNet, Active Inference,
+//! Relational State, and the Embodied Predictive Substrate (EPS).
 //!
 //! The central agent struct combining all modules into a single integration
 //! loop (`step(dt, feedback)`). Provides typed accessors for all 32 Hex32
 //! fields, action computation via Active Inference, relational identity
-//! updates, and shock/perturbation methods.
+//! updates, EPS metabolic governance, and shock/perturbation methods.
 //!
 //! ## Integration Order
 //!
 //! 1. Compute `mu` from state (pred_err, coherence, curvature)
 //! 2. Sub-step BioRegNet (RK4) for valence/arousal evolution
 //! 3. Update coherence via stability feedback
-//! 4. Advance cascade engine on high relevance + error
-//! 5. Pulse-gated learning on cascade completion
-//! 6. Update relational identity (self-continuity, curvature)
-//! 7. Track interoceptive oscillation
+//! 4. Advance EPS (ISE channels, ritual gate, metabolic energy)
+//! 5. Advance cascade engine on high relevance + error
+//! 6. Pulse-gated learning on cascade completion
+//! 7. Update relational identity (self-continuity, curvature)
+//! 8. Track interoceptive oscillation
 //!
 //! ## Extension Contract (for Nexus / downstream layers)
 //!
@@ -28,6 +30,7 @@
 //!         self.update_regime_target(dt);   // Nexus-specific
 //!         self.core.step_bioregnet(dt);
 //!         self.core.update_coherence(dt);
+//!         self.core.step_eps(dt);          // EPS before cascade
 //!         self.core.advance_cascade(dt);
 //!         self.core.pulse_gated_learning(fb);
 //!         self.core.update_relational_identity(dt);
@@ -46,6 +49,7 @@ use crate::relational_state::RelationalState;
 use crate::social::{LocalContext, SocialField};
 use crate::bio_regnet::BioRegNet;
 use crate::active_inference::ActiveInference;
+use crate::eps::{EmbodiedPredictiveSubstrate, IseVector};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ActionVector {
@@ -79,6 +83,7 @@ pub struct Being32 {
     pub rel_state: RelationalState,
     pub regnet: BioRegNet,
     pub inference: ActiveInference,
+    pub eps: EmbodiedPredictiveSubstrate,
 }
 
 impl Being32 {
@@ -88,6 +93,7 @@ impl Being32 {
             rel_state: RelationalState::new(),
             regnet: BioRegNet::new(),
             inference: ActiveInference::new(),
+            eps: EmbodiedPredictiveSubstrate::new(),
         };
         s.awaken_to_baseline();
         s
@@ -162,6 +168,15 @@ impl Being32 {
     pub fn flags(&self) -> u32 { self.core.get_word(31) }
     pub fn set_flags(&mut self, v: u32) { self.core.set_word(31, v); }
 
+    /// Current ISE vector (last computed by step_eps).
+    pub fn ise(&self) -> IseVector { self.eps.last_ise }
+
+    /// Whether the EPS ritual gate was open on the last step_eps call.
+    pub fn eps_gate_open(&self) -> bool { self.eps.gate_open }
+
+    /// Reason string for the last EPS gate evaluation.
+    pub fn eps_gate_reason(&self) -> &'static str { self.eps.gate_reason }
+
     fn awaken_to_baseline(&mut self) {
         self.set_som_heart(1.0);
         self.set_som_breath(1.0);
@@ -172,6 +187,7 @@ impl Being32 {
         self.set_nar_self_cont(1.0);
         self.set_rel_curvature(0.0);
         self.set_bnd_permeability(0.5);
+        self.set_meta_energy(0.8);
     }
 
     pub fn receive_social_field(&mut self, field: &SocialField) {
@@ -301,6 +317,31 @@ impl Being32 {
         self.set_aff_coherence(new_coh);
     }
 
+    /// Advance the Embodied Predictive Substrate.
+    ///
+    /// Computes the ISE vector from current state, evaluates the ritual gate,
+    /// and updates metabolic energy (passive recovery + exertion decay).
+    ///
+    /// Reads: `aff_arousal`, `app_pred_err`, `aff_tension`, `int_load`,
+    ///        `aff_coherence`, `rel_trust`, `meta_energy`.
+    /// Writes: `meta_energy`, `eps.last_ise`, `eps.gate_open`, `eps.gate_reason`.
+    pub fn step_eps(&mut self, dt: f32) {
+        let (_, open, _) = self.eps.step(
+            self.aff_arousal(),
+            self.app_pred_err(),
+            self.aff_tension(),
+            self.int_load(),
+            self.aff_coherence(),
+            self.rel_trust(),
+            self.meta_energy(),
+        );
+        // Metabolic economy: passive recovery each step, decay on authorized exertion.
+        let energy = self.meta_energy();
+        let recovery = 0.05 * dt;
+        let decay = if open { 0.15 * dt } else { 0.0 };
+        self.set_meta_energy((energy + recovery - decay).clamp(0.0, 1.0));
+    }
+
     /// Advance the cascade engine.
     ///
     /// Reads: `app_relevance`, `app_pred_err`, `cas_phase`, `cas_intensity`.
@@ -365,6 +406,7 @@ impl Being32 {
         self.compute_mu_and_set();
         self.step_bioregnet(dt);
         self.update_coherence(dt);
+        self.step_eps(dt);
         self.advance_cascade(dt);
         self.pulse_gated_learning(fb);
         self.update_relational_identity(dt);
