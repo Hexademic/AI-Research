@@ -1,6 +1,6 @@
 //! CMAP Tests — Continuity, Memory, Absence, Persistence Protocol
 //!
-//! A 6-trial falsification harness distinguishing genuine dynamical
+//! A 7-trial falsification harness distinguishing genuine dynamical
 //! persistence from statistical cosplay.
 //!
 //! | Trial | Name | Falsifies |
@@ -11,6 +11,7 @@
 //! | D | SOC Ignition | Absence of critical slowing down |
 //! | E | Absence Resilience | Ablated = intact dynamics |
 //! | F | HOT Calibration | Absent self-model → metacognitive blindness |
+//! | G | Action Loop Calibration | Action model never converges |
 //!
 //! **Trial D is the smoking gun:** recovery time divergence near `mu = 0`
 //! proves the system operates near a genuine phase transition.
@@ -19,8 +20,12 @@
 //! the ho_surprise ↔ pred_err correlation to zero while first-order
 //! performance is preserved (synthetic blindsight analogue).
 //!
-//! v1.5.0 changes:
-//! - Trial F: HOT metacognitive dissociation (self-model ablation)
+//! **Trial G** closes the structural loop: action_pred_err converges to zero
+//! when WorldFeedback matches the policy prior, and meta_error_corr rises
+//! to reflect improved predictive accuracy.
+//!
+//! v1.5.1 changes:
+//! - Trial G: action loop calibration (ActionModel convergence)
 
 use crate::being32::{Being32, WorldFeedback};
 
@@ -290,7 +295,6 @@ fn trial_e_absence_resilience() {
 
 #[test]
 fn trial_f_hot_calibration() {
-    // Warm up SelfModel EMA to a moderate baseline
     let mut intact = Being32::new();
     for _ in 0..100 {
         intact.set_app_pred_err(0.15);
@@ -315,7 +319,6 @@ fn trial_f_hot_calibration() {
     }
     let corr_intact = pearson_correlation(&surprise_series, &pred_err_series);
 
-    // Ablated: SelfModel disabled — ho_surprise stays 0.0
     let mut ablated = Being32::new();
     ablated.self_model.enabled = false;
     for _ in 0..100 {
@@ -350,9 +353,37 @@ fn trial_f_hot_calibration() {
 }
 
 #[test]
+fn trial_g_action_loop_calibration() {
+    let mut being = Being32::new();
+    let mut warmup_errors: Vec<f32> = Vec::new();
+    for _ in 0..100 {
+        being.step(0.05, &WorldFeedback::default());
+        warmup_errors.push(being.action_pred_err());
+    }
+    let avg_warmup = warmup_errors.iter().sum::<f32>() / warmup_errors.len() as f32;
+
+    let matched_fb = WorldFeedback { reward: 0.7, threat: 0.1, contact: 0.7 };
+    for _ in 0..200 {
+        being.step(0.05, &matched_fb);
+    }
+
+    assert!(being.action_pred_err() < 0.2,
+        "Trial G FAIL: action_pred_err={:.3} (expected <0.2 after convergence)",
+        being.action_pred_err());
+    assert!(being.meta_error_corr() > 0.0,
+        "Trial G FAIL: meta_error_corr={:.3} (expected >0 as accuracy accumulates)",
+        being.meta_error_corr());
+    assert!(avg_warmup > 0.1,
+        "Trial G FAIL: avg_warmup={:.3} (expected >0.1 before convergence)",
+        avg_warmup);
+    println!("[TRIAL G] PASS — action_pred_err={:.3}, meta_err_corr={:.3}, warmup_err={:.3}",
+             being.action_pred_err(), being.meta_error_corr(), avg_warmup);
+}
+
+#[test]
 fn cmap_full() {
     println!("{}", "=".repeat(60));
-    println!("CMAP MASTER PROTOCOL — Being32 v1.5.0");
+    println!("CMAP MASTER PROTOCOL — Being32 v1.5.1");
     println!("{}", "=".repeat(60));
     trial_a_monadic_refusal();
     trial_b_relational_refusal();
@@ -360,6 +391,7 @@ fn cmap_full() {
     trial_d_soc_ignition();
     trial_e_absence_resilience();
     trial_f_hot_calibration();
+    trial_g_action_loop_calibration();
     println!("{}", "=".repeat(60));
     println!("ALL TRIALS PASSED");
     println!("{}", "=".repeat(60));

@@ -1,6 +1,6 @@
 [package]
 name = "being32"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 authors = ["The Being32 Architect <being32@proton.me>"]
 description = "A dynamically persistent synthetic agent based on critical homeostatic regulation and active inference"
