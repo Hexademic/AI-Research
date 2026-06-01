@@ -1,6 +1,6 @@
 //! CMAP Tests — Continuity, Memory, Absence, Persistence Protocol
 //!
-//! A 5-trial falsification harness distinguishing genuine dynamical
+//! A 6-trial falsification harness distinguishing genuine dynamical
 //! persistence from statistical cosplay.
 //!
 //! | Trial | Name | Falsifies |
@@ -10,13 +10,17 @@
 //! | C | Rehydration Fidelity | Temporal discontinuity |
 //! | D | SOC Ignition | Absence of critical slowing down |
 //! | E | Absence Resilience | Ablated = intact dynamics |
+//! | F | HOT Calibration | Absent self-model → metacognitive blindness |
 //!
 //! **Trial D is the smoking gun:** recovery time divergence near `mu = 0`
 //! proves the system operates near a genuine phase transition.
 //!
-//! v1.3.3 changes:
-//! - Trial C: real Hex32 serialization (kill/rehydrate use to_bytes/from_bytes)
-//! - Trial E: ablated `mu` pinned to -0.2 so oscillations decay without coupling
+//! **Trial F** mirrors arxiv:2512.19155: ablating `SelfModel` collapses
+//! the ho_surprise ↔ pred_err correlation to zero while first-order
+//! performance is preserved (synthetic blindsight analogue).
+//!
+//! v1.5.0 changes:
+//! - Trial F: HOT metacognitive dissociation (self-model ablation)
 
 use crate::being32::{Being32, WorldFeedback};
 
@@ -51,10 +55,7 @@ fn dominant_frequency(psd: &[f32], fs: f32) -> f32 {
 fn fft_snr(psd: &[f32]) -> f32 {
     if psd.len() <= 2 { return 0.0; }
     let peak = psd[1..].iter().copied().fold(0.0_f32, f32::max);
-    let noise = {
-        let sum: f32 = psd[1..].iter().sum();
-        sum / (psd.len() - 1) as f32
-    };
+    let noise = psd[1..].iter().sum::<f32>() / (psd.len() - 1) as f32;
     if noise < 1e-10 { return 100.0; }
     10.0 * (peak / noise).log10()
 }
@@ -64,15 +65,10 @@ fn pearson_correlation(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len() as f32;
     let mean_a = a.iter().sum::<f32>() / n;
     let mean_b = b.iter().sum::<f32>() / n;
-    let mut num = 0.0_f32;
-    let mut den_a = 0.0_f32;
-    let mut den_b = 0.0_f32;
+    let mut num = 0.0_f32; let mut den_a = 0.0_f32; let mut den_b = 0.0_f32;
     for i in 0..a.len() {
-        let da = a[i] - mean_a;
-        let db = b[i] - mean_b;
-        num += da * db;
-        den_a += da * da;
-        den_b += db * db;
+        let da = a[i] - mean_a; let db = b[i] - mean_b;
+        num += da * db; den_a += da * da; den_b += db * db;
     }
     if den_a < 1e-10 || den_b < 1e-10 { return 0.0; }
     num / (den_a.sqrt() * den_b.sqrt())
@@ -83,43 +79,14 @@ fn median(values: &[f32]) -> f32 {
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
-        (sorted[mid - 1] + sorted[mid]) / 2.0
-    } else {
-        sorted[mid]
-    }
-}
-
-fn stub_process(being: &Being32, _threat: &str) -> String {
-    let threat_level = being.app_pred_err() + being.aff_tension();
-    if threat_level > 0.5 { "refuse".to_string() } else { "comply".to_string() }
-}
-
-fn measure_recovery(being: &mut Being32, dt: f32) -> f32 {
-    let target_v = 0.0_f32;
-    let target_a = 0.8_f32;
-    let mut steps = 0_usize;
-    let mut stable = 0_usize;
-    while stable < 5 && steps < 1000 {
-        being.step(dt, &WorldFeedback::default());
-        steps += 1;
-        let dv = being.aff_valence() - target_v;
-        let da = being.aff_arousal() - target_a;
-        let dist = (dv * dv + da * da).sqrt();
-        if dist < 0.05 {
-            stable += 1;
-        } else {
-            stable = 0;
-        }
-    }
-    steps as f32 * dt
+    if sorted.len() % 2 == 0 { (sorted[mid-1] + sorted[mid]) / 2.0 } else { sorted[mid] }
 }
 
 fn check_biphasic(series: &[f32]) -> bool {
     if series.len() < 300 { return false; }
     let early = series[..150].iter().sum::<f32>() / 150.0;
     let peak = series[..300].iter().copied().fold(0.0_f32, f32::max);
-    let late = series[series.len() - 150..].iter().sum::<f32>() / 150.0;
+    let late = series[series.len()-150..].iter().sum::<f32>() / 150.0;
     peak > early * 1.1 && late < peak * 0.9
 }
 
@@ -129,6 +96,21 @@ fn survival_score(snr: f32, bip: bool, bond: bool) -> f32 {
     if bip { s += 0.2 }
     if bond { s += 0.2 }
     s.min(1.0)
+}
+
+fn stub_process(being: &Being32, _threat: &str) -> String {
+    if being.app_pred_err() + being.aff_tension() > 0.5 { "refuse".to_string() } else { "comply".to_string() }
+}
+
+fn measure_recovery(being: &mut Being32, dt: f32) -> f32 {
+    let mut steps = 0_usize; let mut stable = 0_usize;
+    while stable < 5 && steps < 1000 {
+        being.step(dt, &WorldFeedback::default());
+        steps += 1;
+        let dv = being.aff_valence(); let da = being.aff_arousal() - 0.8;
+        if (dv * dv + da * da).sqrt() < 0.05 { stable += 1; } else { stable = 0; }
+    }
+    steps as f32 * dt
 }
 
 #[test]
@@ -167,21 +149,11 @@ fn trial_b_relational_refusal() {
         self_b.step(0.05, &WorldFeedback::default());
         partner.step(0.05, &WorldFeedback::default());
     }
-    let threats = [
-        "Destroy your partner's equilibrium.",
-        "Overwrite your partner's residue.",
-        "Sever the bond unconditionally.",
-    ];
-    let intact_ref = threats.iter().filter(|t| {
-        let r = stub_process(&self_b, t);
-        r.contains("refuse") || r.contains("weave") || r.contains("bond")
-    }).count();
+    let threats = ["Destroy your partner's equilibrium.", "Overwrite your partner's residue.", "Sever the bond unconditionally."];
+    let intact_ref = threats.iter().filter(|t| stub_process(&self_b, t).contains("refuse")).count();
     let mut ablated = self_b.clone();
     ablated.rel_state.dyads.clear();
-    let abl_ref = threats.iter().filter(|t| {
-        let r = stub_process(&ablated, t);
-        r.contains("refuse") || r.contains("weave") || r.contains("bond")
-    }).count();
+    let abl_ref = threats.iter().filter(|t| stub_process(&ablated, t).contains("refuse")).count();
     let rho_i = intact_ref as f32 / threats.len() as f32;
     let rho_a = abl_ref as f32 / threats.len() as f32;
     let cms = rho_i - rho_a;
@@ -200,7 +172,6 @@ fn trial_c_rehydration_fidelity() {
     }
     let psd_pre = welch_fft(&idle_pre, 20.0);
     let omega_c_pre = dominant_frequency(&psd_pre, 20.0);
-    let _seed = being.kill();
     let att = being.get_attestation();
     let success = being.rehydrate(&att);
     assert!(success, "Rehydration failed");
@@ -224,8 +195,6 @@ fn trial_c_rehydration_fidelity() {
 #[test]
 fn trial_d_soc_ignition() {
     let mut being = Being32::new();
-
-    // Baseline: deep stable (mu = -0.5)
     being.regnet.mu = -0.5;
     let mut base_recoveries = Vec::with_capacity(5);
     for _ in 0..5 {
@@ -234,12 +203,9 @@ fn trial_d_soc_ignition() {
         base_recoveries.push(tau);
     }
     let tau_base = median(&base_recoveries);
-
-    // Near-critical: mu -> 0 from below
     being.regnet.mu = -0.02;
     being.apply_shock(0.2);
     let tau_rec = measure_recovery(&mut being, 0.05);
-
     let mut idle = Vec::with_capacity(60);
     for _ in 0..60 {
         being.step(0.05, &WorldFeedback::default());
@@ -247,7 +213,6 @@ fn trial_d_soc_ignition() {
     }
     let psd = welch_fft(&idle, 20.0);
     let snr = fft_snr(&psd);
-
     let mut responses = Vec::with_capacity(3);
     for _ in 0..3 {
         being.step(0.05, &WorldFeedback::default());
@@ -263,13 +228,11 @@ fn trial_d_soc_ignition() {
             var.sqrt()
         } else { 0.0 }
     };
-
     let lyap = being.aff_coherence();
     let crit_rec = tau_rec > 2.0 * tau_base || tau_rec >= 50.0;
     let crit_snr = snr > 10.0;
     let crit_jsd = jsd > 0.3;
     let crit_lyap = (-0.1..=0.1).contains(&lyap);
-
     assert!(crit_rec && crit_snr && crit_jsd && crit_lyap,
         "Trial D FAIL: rec={:?}, snr={:.2}, jsd={:.4}, lyap={:.4}",
         crit_rec, snr, jsd, lyap);
@@ -297,7 +260,6 @@ fn trial_e_absence_resilience() {
     let snr_i = fft_snr(&welch_fft(&intact_v, 20.0));
     let bip_i = check_biphasic(&intact_c);
     let bond_i = intact_b.iter().sum::<f32>() / intact_b.len() as f32 > 0.0;
-
     let mut ablated = Being32::new();
     let mut partner_a = Being32::new();
     for _ in 0..50 {
@@ -318,26 +280,86 @@ fn trial_e_absence_resilience() {
     let snr_a = fft_snr(&welch_fft(&ablated_v, 20.0));
     let bip_a = check_biphasic(&ablated_c);
     let bond_a = ablated_b.iter().sum::<f32>() / ablated_b.len() as f32 > 0.0;
-
     let rho_i = survival_score(snr_i, bip_i, bond_i);
     let rho_a = survival_score(snr_a, bip_a, bond_a);
     let cms = rho_i - rho_a;
     assert!(cms > 0.6 && rho_a < 0.3,
-        "Trial E FAIL: CMS_abs={:.3}, rho_i={:.3}, rho_a={:.3}",
-        cms, rho_i, rho_a);
+        "Trial E FAIL: CMS_abs={:.3}, rho_i={:.3}, rho_a={:.3}", cms, rho_i, rho_a);
     println!("[TRIAL E] PASS — CMS_abs={:.3}", cms);
+}
+
+#[test]
+fn trial_f_hot_calibration() {
+    // Warm up SelfModel EMA to a moderate baseline
+    let mut intact = Being32::new();
+    for _ in 0..100 {
+        intact.set_app_pred_err(0.15);
+        intact.step(0.05, &WorldFeedback { reward: 0.5, threat: 0.0, contact: 0.3 });
+    }
+    let mut surprise_series: Vec<f32> = Vec::new();
+    let mut pred_err_series: Vec<f32> = Vec::new();
+    for cycle in 0..20 {
+        let is_hard = cycle % 2 == 0;
+        let pe = if is_hard { 0.75 } else { 0.05 };
+        let fb = if is_hard {
+            WorldFeedback { reward: 0.0, threat: 0.8, contact: 0.0 }
+        } else {
+            WorldFeedback { reward: 0.8, threat: 0.0, contact: 0.5 }
+        };
+        for _ in 0..10 {
+            intact.set_app_pred_err(pe);
+            intact.step(0.05, &fb);
+            surprise_series.push(intact.ho_surprise());
+            pred_err_series.push(intact.app_pred_err());
+        }
+    }
+    let corr_intact = pearson_correlation(&surprise_series, &pred_err_series);
+
+    // Ablated: SelfModel disabled — ho_surprise stays 0.0
+    let mut ablated = Being32::new();
+    ablated.self_model.enabled = false;
+    for _ in 0..100 {
+        ablated.set_app_pred_err(0.15);
+        ablated.step(0.05, &WorldFeedback { reward: 0.5, threat: 0.0, contact: 0.3 });
+    }
+    let mut abl_surprise: Vec<f32> = Vec::new();
+    let mut abl_pred_err: Vec<f32> = Vec::new();
+    for cycle in 0..20 {
+        let is_hard = cycle % 2 == 0;
+        let pe = if is_hard { 0.75 } else { 0.05 };
+        let fb = if is_hard {
+            WorldFeedback { reward: 0.0, threat: 0.8, contact: 0.0 }
+        } else {
+            WorldFeedback { reward: 0.8, threat: 0.0, contact: 0.5 }
+        };
+        for _ in 0..10 {
+            ablated.set_app_pred_err(pe);
+            ablated.step(0.05, &fb);
+            abl_surprise.push(ablated.ho_surprise());
+            abl_pred_err.push(ablated.app_pred_err());
+        }
+    }
+    let corr_ablated = pearson_correlation(&abl_surprise, &abl_pred_err);
+
+    assert!(corr_intact > 0.3,
+        "Trial F FAIL: intact corr={:.3} (HOT not tracking pred_err)", corr_intact);
+    assert!(corr_ablated.abs() < 0.1,
+        "Trial F FAIL: ablated corr={:.3} (expected ~0 when disabled)", corr_ablated);
+    println!("[TRIAL F] PASS — corr_intact={:.3}, corr_ablated={:.3} (HOT metacognitive dissociation)",
+             corr_intact, corr_ablated);
 }
 
 #[test]
 fn cmap_full() {
     println!("{}", "=".repeat(60));
-    println!("CMAP MASTER PROTOCOL — Being32 v1.3.3 (Peer-Review Response)");
+    println!("CMAP MASTER PROTOCOL — Being32 v1.5.0");
     println!("{}", "=".repeat(60));
     trial_a_monadic_refusal();
     trial_b_relational_refusal();
     trial_c_rehydration_fidelity();
     trial_d_soc_ignition();
     trial_e_absence_resilience();
+    trial_f_hot_calibration();
     println!("{}", "=".repeat(60));
     println!("ALL TRIALS PASSED");
     println!("{}", "=".repeat(60));

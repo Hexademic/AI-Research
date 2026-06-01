@@ -15,8 +15,9 @@
 //! | `relational_state` | Mood, dyads, transient neighbor stats |
 //! | `social` | SocialField, affective distance, neighbor context |
 //! | `eps` | Embodied Predictive Substrate: ISE channels + ritual gate |
-//! | `being32` | Integration: Hex32 + BioRegNet + AI + RelState + EPS |
-//! | `cmap_tests` | 5-trial falsification harness (tests only) |
+//! | `self_model` | HOT layer: EMA-based second-order state representation |
+//! | `being32` | Integration: Hex32 + BioRegNet + AI + RelState + EPS + HOT |
+//! | `cmap_tests` | 6-trial falsification harness (tests only) |
 //!
 //! ## Running the CMAP Protocol
 //!
@@ -36,6 +37,7 @@ pub mod social;
 pub mod bio_regnet;
 pub mod active_inference;
 pub mod eps;
+pub mod self_model;
 pub mod being32;
 
 #[cfg(test)]

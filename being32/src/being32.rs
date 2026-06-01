@@ -1,10 +1,6 @@
 //! Being32 — Integration of Hex32 Substrate, BioRegNet, Active Inference,
-//! Relational State, and the Embodied Predictive Substrate (EPS).
-//!
-//! The central agent struct combining all modules into a single integration
-//! loop (`step(dt, feedback)`). Provides typed accessors for all 32 Hex32
-//! fields, action computation via Active Inference, relational identity
-//! updates, EPS metabolic governance, and shock/perturbation methods.
+//! Relational State, the Embodied Predictive Substrate (EPS), and
+//! the Self-Model (HOT Layer).
 //!
 //! ## Integration Order
 //!
@@ -12,10 +8,11 @@
 //! 2. Sub-step BioRegNet (RK4) for valence/arousal evolution
 //! 3. Update coherence via stability feedback
 //! 4. Advance EPS (ISE channels, ritual gate, metabolic energy)
-//! 5. Advance cascade engine on high relevance + error
-//! 6. Pulse-gated learning on cascade completion
-//! 7. Update relational identity (self-continuity, curvature)
-//! 8. Track interoceptive oscillation
+//! 5. Advance Self-Model (HOT vector, meta-precision feedback)
+//! 6. Advance cascade engine on high relevance + error
+//! 7. Pulse-gated learning on cascade completion
+//! 8. Update relational identity (self-continuity, curvature)
+//! 9. Track interoceptive oscillation
 //!
 //! ## Extension Contract (for Nexus / downstream layers)
 //!
@@ -30,7 +27,8 @@
 //!         self.update_regime_target(dt);   // Nexus-specific
 //!         self.core.step_bioregnet(dt);
 //!         self.core.update_coherence(dt);
-//!         self.core.step_eps(dt);          // EPS before cascade
+//!         self.core.step_eps(dt);
+//!         self.core.step_self_model(dt);   // HOT after EPS
 //!         self.core.advance_cascade(dt);
 //!         self.core.pulse_gated_learning(fb);
 //!         self.core.update_relational_identity(dt);
@@ -39,10 +37,8 @@
 //! }
 //! ```
 //!
-//! **Note:** Rust has no virtual dispatch on struct methods. Calling
-//! `self.update_regime_target()` inside `Being32::step()` would *always*
-//! call `Being32`'s version. The extension pattern is explicit orchestration,
-//! not override.
+//! **Note:** Rust has no virtual dispatch on struct methods. The extension
+//! pattern is explicit orchestration, not override.
 
 use crate::hex32::Hex32;
 use crate::relational_state::RelationalState;
@@ -50,6 +46,7 @@ use crate::social::{LocalContext, SocialField};
 use crate::bio_regnet::BioRegNet;
 use crate::active_inference::ActiveInference;
 use crate::eps::{EmbodiedPredictiveSubstrate, IseVector};
+use crate::self_model::SelfModel;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ActionVector {
@@ -84,6 +81,7 @@ pub struct Being32 {
     pub regnet: BioRegNet,
     pub inference: ActiveInference,
     pub eps: EmbodiedPredictiveSubstrate,
+    pub self_model: SelfModel,
 }
 
 impl Being32 {
@@ -94,6 +92,7 @@ impl Being32 {
             regnet: BioRegNet::new(),
             inference: ActiveInference::new(),
             eps: EmbodiedPredictiveSubstrate::new(),
+            self_model: SelfModel::new(),
         };
         s.awaken_to_baseline();
         s
@@ -103,7 +102,6 @@ impl Being32 {
 
     #[inline]
     fn get_f32(&self, idx: usize) -> f32 { f32::from_bits(self.core.get_word(idx)) }
-
     #[inline]
     fn set_f32(&mut self, idx: usize, val: f32) { self.core.set_word(idx, val.to_bits()); }
 
@@ -168,14 +166,15 @@ impl Being32 {
     pub fn flags(&self) -> u32 { self.core.get_word(31) }
     pub fn set_flags(&mut self, v: u32) { self.core.set_word(31, v); }
 
-    /// Current ISE vector (last computed by step_eps).
     pub fn ise(&self) -> IseVector { self.eps.last_ise }
-
-    /// Whether the EPS ritual gate was open on the last step_eps call.
     pub fn eps_gate_open(&self) -> bool { self.eps.gate_open }
-
-    /// Reason string for the last EPS gate evaluation.
     pub fn eps_gate_reason(&self) -> &'static str { self.eps.gate_reason }
+
+    pub fn ho_confidence(&self) -> f32 { self.self_model.ho_confidence }
+    pub fn ho_surprise(&self) -> f32 { self.self_model.ho_surprise }
+    pub fn ho_load(&self) -> f32 { self.self_model.ho_load }
+    pub fn ho_valence(&self) -> f32 { self.self_model.ho_valence }
+    pub fn meta_precision(&self) -> f32 { self.self_model.meta_precision() }
 
     fn awaken_to_baseline(&mut self) {
         self.set_som_heart(1.0);
@@ -190,168 +189,126 @@ impl Being32 {
         self.set_meta_energy(0.8);
     }
 
+    fn avg_bond_strength(&self) -> f32 {
+        if self.rel_state.dyads.is_empty() { return 0.0; }
+        self.rel_state.dyads.iter().map(|d| d.affinity.abs()).sum::<f32>()
+            / self.rel_state.dyads.len() as f32
+    }
+
     pub fn receive_social_field(&mut self, field: &SocialField) {
         let v = self.aff_valence();
         let a = self.aff_arousal();
         let p = self.bnd_permeability();
-        let new_v = v + 0.05 * (field.avg_valence - v);
-        let new_a = a + 0.05 * (field.avg_arousal - a);
-        self.set_aff_valence(new_v);
-        self.set_aff_arousal(new_a);
-        let new_perm = p * (1.0 - 0.1 * field.density.min(5.0));
-        self.set_bnd_permeability(new_perm);
+        self.set_aff_valence(v + 0.05 * (field.avg_valence - v));
+        self.set_aff_arousal(a + 0.05 * (field.avg_arousal - a));
+        self.set_bnd_permeability(p * (1.0 - 0.1 * field.density.min(5.0)));
         let mismatch = (v - field.avg_valence).abs();
         let curv = self.rel_curvature() + 0.05 * (mismatch - self.rel_curvature());
         self.set_rel_curvature(curv.clamp(-1.0, 1.0));
     }
 
     pub fn compute_action(&self, _ctx: &LocalContext) -> ActionVector {
-        let v = self.aff_valence();
-        let a = self.aff_arousal();
-        let t = self.aff_tension();
-        let bond = if self.rel_state.dyads.is_empty() {
-            0.0_f32
-        } else {
-            self.rel_state.dyads.iter().map(|d| d.affinity.abs()).sum::<f32>()
-                / self.rel_state.dyads.len() as f32
-        };
-        let policy = self.inference.compute_policy(v, a, t, bond);
+        let policy = self.inference.compute_policy(
+            self.aff_valence(), self.aff_arousal(), self.aff_tension(),
+            self.avg_bond_strength());
         ActionVector { approach: policy[0], avoid: policy[1], freeze: policy[2] }
     }
 
     pub fn apply_action(&mut self, act: ActionVector) {
-        let heart = self.som_heart() + 0.1 * (act.approach - act.avoid);
-        let breath = self.som_breath() + 0.05 * (act.approach - act.avoid);
-        let tremor = self.som_tremor() + 0.1 * act.freeze;
-        self.set_som_heart(heart.clamp(0.0, 2.0));
-        self.set_som_breath(breath.clamp(0.0, 2.0));
-        self.set_som_tremor(tremor.clamp(0.0, 1.0));
-        let load = self.bnd_soc_load() + 0.1 * act.avoid - 0.05 * act.approach;
-        self.set_bnd_soc_load(load.clamp(0.0, 1.0));
-        let drift = self.nar_drift() + 0.02 * (act.avoid - act.approach);
-        self.set_nar_drift(drift.clamp(-1.0, 1.0));
+        self.set_som_heart((self.som_heart() + 0.1 * (act.approach - act.avoid)).clamp(0.0, 2.0));
+        self.set_som_breath((self.som_breath() + 0.05 * (act.approach - act.avoid)).clamp(0.0, 2.0));
+        self.set_som_tremor((self.som_tremor() + 0.1 * act.freeze).clamp(0.0, 1.0));
+        self.set_bnd_soc_load((self.bnd_soc_load() + 0.1 * act.avoid - 0.05 * act.approach).clamp(0.0, 1.0));
+        self.set_nar_drift((self.nar_drift() + 0.02 * (act.avoid - act.approach)).clamp(-1.0, 1.0));
     }
 
     pub fn calculate_relational_load(&self) -> f32 {
         if self.rel_state.dyads.is_empty() { return 0.0; }
-        let mut total_load = 0.0;
-        for dyad in &self.rel_state.dyads {
-            let dyad_harmony = dyad.affinity * dyad.trust;
-            let dyad_load = 1.0 - dyad_harmony;
-            total_load += dyad_load.max(0.0);
-        }
-        total_load / (self.rel_state.dyads.len() as f32)
+        self.rel_state.dyads.iter()
+            .map(|d| (1.0 - d.affinity * d.trust).max(0.0))
+            .sum::<f32>() / self.rel_state.dyads.len() as f32
     }
 
     pub fn update_relational_identity(&mut self, dt: f32) {
-        let current_load = self.calculate_relational_load();
         let dyad_count = self.rel_state.dyads.len() as f32;
-        let saturation_factor = if dyad_count <= 1.0 { 1.0 }
+        let saturation = if dyad_count <= 1.0 { 1.0 }
             else { (1.0 / (1.0 + 0.1 * (dyad_count - 1.0))).clamp(0.3, 1.0) };
-        let effective_load = current_load * saturation_factor;
-        let capped_load = effective_load.min(2.0);
-        let mut target_self_cont = (1.0 - (capped_load - 0.5)).clamp(0.0, 1.0);
-        let identity_floor = 0.2;
-        if target_self_cont < identity_floor { target_self_cont = identity_floor; }
-        let current_self_cont = self.nar_self_cont();
-        let delta = target_self_cont - current_self_cont;
-        let max_step = 0.02 * dt;
-        let clamped_delta = delta.clamp(-max_step, max_step);
-        let recovery_bias = if clamped_delta > 0.0 { 1.2 } else { 1.0 };
-        let new_self_cont = (current_self_cont + clamped_delta * recovery_bias).clamp(0.0, 1.0);
-        self.set_nar_self_cont(new_self_cont);
-        let mut target_curvature = (capped_load - 1.0).clamp(-1.0, 1.0);
-        if capped_load < 0.5 { target_curvature *= 0.5; }
-        let current_curvature = self.rel_curvature();
-        let curvature_delta = target_curvature - current_curvature;
-        let max_curv_step = 0.04 * dt;
-        let clamped_curv_delta = curvature_delta.clamp(-max_curv_step, max_curv_step);
-        let new_curvature = (current_curvature + clamped_curv_delta).clamp(-1.0, 1.0);
-        self.set_rel_curvature(new_curvature);
+        let capped_load = (self.calculate_relational_load() * saturation).min(2.0);
+        let target_sc = ((1.0 - (capped_load - 0.5)).clamp(0.0, 1.0)).max(0.2);
+        let delta_sc = (target_sc - self.nar_self_cont()).clamp(-0.02 * dt, 0.02 * dt);
+        let bias = if delta_sc > 0.0 { 1.2 } else { 1.0 };
+        self.set_nar_self_cont((self.nar_self_cont() + delta_sc * bias).clamp(0.0, 1.0));
+        let mut target_curv = (capped_load - 1.0).clamp(-1.0, 1.0);
+        if capped_load < 0.5 { target_curv *= 0.5; }
+        let delta_curv = (target_curv - self.rel_curvature()).clamp(-0.04 * dt, 0.04 * dt);
+        self.set_rel_curvature((self.rel_curvature() + delta_curv).clamp(-1.0, 1.0));
     }
 
     // ------------------------------------------------------------------
-    // Decomposed sub-steps (public so Nexus can orchestrate its own loop)
+    // Decomposed sub-steps
     // ------------------------------------------------------------------
 
-    /// Compute `mu` from current state and set `regnet.mu`.
-    ///
-    /// Reads: `app_pred_err`, `aff_coherence`, `rel_curvature`.
     pub fn compute_mu_and_set(&mut self) {
-        let pred_err = self.app_pred_err();
-        let coh = self.aff_coherence();
-        let curv = self.rel_curvature();
-        let mu = BioRegNet::compute_mu(pred_err, coh, curv);
+        let mu = BioRegNet::compute_mu(self.app_pred_err(), self.aff_coherence(), self.rel_curvature());
         self.regnet.mu = mu;
     }
 
-    /// Run BioRegNet RK4 sub-stepping on valence and arousal.
-    ///
-    /// Reads/writes: `aff_valence`, `aff_arousal` (via `regnet.step`).
     pub fn step_bioregnet(&mut self, dt: f32) {
-        let regnet_dt = 0.01_f32;
-        let sub_steps = (dt / regnet_dt).ceil() as usize;
+        let sub_steps = (dt / 0.01_f32).ceil() as usize;
         let actual_dt = dt / sub_steps as f32;
-
         let mut valence = f32::from_bits(self.core.get_word(3));
         let mut arousal = f32::from_bits(self.core.get_word(4));
-        for _ in 0..sub_steps {
-            self.regnet.step(&mut valence, &mut arousal, actual_dt);
-        }
+        for _ in 0..sub_steps { self.regnet.step(&mut valence, &mut arousal, actual_dt); }
         self.core.set_word(3, valence.to_bits());
         self.core.set_word(4, arousal.to_bits());
     }
 
-    /// Update coherence via stability feedback.
-    ///
-    /// Reads: `rel_curvature`, `nar_drift`, `aff_coherence`, `regnet.mu`.
-    /// Writes: `aff_coherence`.
     pub fn update_coherence(&mut self, _dt: f32) {
-        let curv = self.rel_curvature();
-        let drift = self.nar_drift();
-        let coh = self.aff_coherence();
-        let mu = self.regnet.mu;
-        let target_coh = (-curv + (1.0 - drift.abs())).clamp(0.0, 1.0);
-        let stability = (1.0 + mu).clamp(0.0, 1.0);
-        let new_coh = coh + 0.05 * (target_coh * stability - coh);
+        let target_coh = (-self.rel_curvature() + (1.0 - self.nar_drift().abs())).clamp(0.0, 1.0);
+        let stability = (1.0 + self.regnet.mu).clamp(0.0, 1.0);
+        let new_coh = self.aff_coherence() + 0.05 * (target_coh * stability - self.aff_coherence());
         self.set_aff_coherence(new_coh);
     }
 
-    /// Advance the Embodied Predictive Substrate.
-    ///
-    /// Computes the ISE vector from current state, evaluates the ritual gate,
-    /// and updates metabolic energy (passive recovery + exertion decay).
-    ///
-    /// Reads: `aff_arousal`, `app_pred_err`, `aff_tension`, `int_load`,
-    ///        `aff_coherence`, `rel_trust`, `meta_energy`.
-    /// Writes: `meta_energy`, `eps.last_ise`, `eps.gate_open`, `eps.gate_reason`.
+    /// Advance the Embodied Predictive Substrate: ISE channels + ritual gate + metabolic economy.
     pub fn step_eps(&mut self, dt: f32) {
         let (_, open, _) = self.eps.step(
-            self.aff_arousal(),
-            self.app_pred_err(),
-            self.aff_tension(),
-            self.int_load(),
-            self.aff_coherence(),
-            self.rel_trust(),
-            self.meta_energy(),
+            self.aff_arousal(), self.app_pred_err(), self.aff_tension(),
+            self.int_load(), self.aff_coherence(), self.rel_trust(), self.meta_energy(),
         );
-        // Metabolic economy: passive recovery each step, decay on authorized exertion.
         let energy = self.meta_energy();
-        let recovery = 0.05 * dt;
         let decay = if open { 0.15 * dt } else { 0.0 };
-        self.set_meta_energy((energy + recovery - decay).clamp(0.0, 1.0));
+        self.set_meta_energy((energy + 0.05 * dt - decay).clamp(0.0, 1.0));
     }
 
-    /// Advance the cascade engine.
+    /// Advance the Self-Model (HOT layer) and apply meta-precision feedback.
     ///
-    /// Reads: `app_relevance`, `app_pred_err`, `cas_phase`, `cas_intensity`.
-    /// Writes: `cas_phase`, `cas_intensity`, `cas_complete`.
+    /// Updates EMA trackers and HOT vector, then re-computes active inference
+    /// precision scaled by `meta_precision()`. High meta-surprise → lower
+    /// precision → broader policy distribution (more exploratory).
+    ///
+    /// Reads: `aff_coherence`, `app_pred_err`, `int_load`, `eps.last_ise`.
+    /// Writes: `self_model.*`, `inference.precision`.
+    pub fn step_self_model(&mut self, _dt: f32) {
+        let ise = self.eps.last_ise;
+        self.self_model.step(
+            self.aff_coherence(),
+            self.app_pred_err(),
+            self.int_load(),
+            ise.s - ise.t,
+        );
+        let bond = self.avg_bond_strength();
+        self.inference.update_precision(bond, self.app_pred_err());
+        let mp = self.self_model.meta_precision();
+        for p in &mut self.inference.precision {
+            *p = (*p * mp).clamp(0.1, 2.0);
+        }
+    }
+
     pub fn advance_cascade(&mut self, dt: f32) {
-        let rel = self.app_relevance();
-        let pred_err = self.app_pred_err();
         let mut phase = self.cas_phase();
         let mut intensity = self.cas_intensity();
-        if rel > 0.5 && pred_err > 0.2 {
+        if self.app_relevance() > 0.5 && self.app_pred_err() > 0.2 {
             let mood_factor = 0.5 + 0.5 * (self.rel_state.mood.arousal / 2.0);
             phase += dt * (0.5 + intensity) * mood_factor;
         }
@@ -366,47 +323,27 @@ impl Being32 {
         self.set_cas_intensity(intensity.clamp(0.0, 1.0));
     }
 
-    /// Pulse-gated learning on cascade completion.
-    ///
-    /// Reads: `cas_complete`, `aff_tension`, `app_expect_impact`, `rel_trust`,
-    ///        `bnd_permeability`.
-    /// Writes: `app_expect_impact`, `rel_trust`, `bnd_permeability`.
     pub fn pulse_gated_learning(&mut self, fb: &WorldFeedback) {
         if self.cas_complete() > 0.5 {
-            let reward = fb.reward;
-            let threat = fb.threat;
-            let contact = fb.contact;
-            let reward_p = reward * (0.5 + 0.5 * contact);
-            let stress = (threat + self.aff_tension()) / 2.0;
-            let safety = 1.0 - stress;
-            let e = self.app_expect_impact();
-            self.set_app_expect_impact(e + 0.05 * (reward_p - e));
-            let tr = self.rel_trust();
-            self.set_rel_trust(tr + 0.01 * (safety - tr));
-            let bp = self.bnd_permeability();
-            self.set_bnd_permeability(bp + 0.01 * (contact - bp));
+            let reward_p = fb.reward * (0.5 + 0.5 * fb.contact);
+            let safety = 1.0 - (fb.threat + self.aff_tension()) / 2.0;
+            self.set_app_expect_impact(self.app_expect_impact() + 0.05 * (reward_p - self.app_expect_impact()));
+            self.set_rel_trust(self.rel_trust() + 0.01 * (safety - self.rel_trust()));
+            self.set_bnd_permeability(self.bnd_permeability() + 0.01 * (fb.contact - self.bnd_permeability()));
         }
     }
 
-    /// Track interoceptive oscillation.
-    ///
-    /// Reads: `int_osc`, `som_heart`.
-    /// Writes: `int_osc`.
     pub fn track_interoception(&mut self, dt: f32) {
         let osc = self.int_osc() + dt * (self.som_heart() - 1.0);
         self.set_int_osc(osc.clamp(-1.0, 1.0));
     }
-
-    // ------------------------------------------------------------------
-    // Default integration loop — delegates to sub-steps in order.
-    // CMAP tests call this directly; extension layers write their own.
-    // ------------------------------------------------------------------
 
     pub fn step(&mut self, dt: f32, fb: &WorldFeedback) {
         self.compute_mu_and_set();
         self.step_bioregnet(dt);
         self.update_coherence(dt);
         self.step_eps(dt);
+        self.step_self_model(dt);
         self.advance_cascade(dt);
         self.pulse_gated_learning(fb);
         self.update_relational_identity(dt);
@@ -414,40 +351,29 @@ impl Being32 {
     }
 
     pub fn perceptual_radius(&self) -> f32 {
-        let base = 1.0;
-        let coherence = self.aff_coherence().clamp(0.0, 1.0);
-        let arousal = self.aff_arousal().clamp(0.0, 2.0);
-        let mood_open = self.rel_state.mood.openness.clamp(0.0, 1.0);
-        base * coherence * (2.0 - arousal).max(0.1) * (0.5 + 0.5 * mood_open)
+        1.0 * self.aff_coherence().clamp(0.0, 1.0)
+            * (2.0 - self.aff_arousal().clamp(0.0, 2.0)).max(0.1)
+            * (0.5 + 0.5 * self.rel_state.mood.openness.clamp(0.0, 1.0))
     }
 
     pub fn apply_shock(&mut self, magnitude: f32) {
         let m = magnitude.clamp(0.0, 1.0);
-        let v = self.aff_valence();
-        self.set_aff_valence((v - m * 0.6).clamp(-1.0, 1.0));
-        let a = self.aff_arousal();
-        self.set_aff_arousal((a + m * 0.8).clamp(0.0, 2.0));
-        let t = self.aff_tension();
-        self.set_aff_tension((t + m).clamp(-1.0, 2.0));
+        self.set_aff_valence((self.aff_valence() - m * 0.6).clamp(-1.0, 1.0));
+        self.set_aff_arousal((self.aff_arousal() + m * 0.8).clamp(0.0, 2.0));
+        self.set_aff_tension((self.aff_tension() + m).clamp(-1.0, 2.0));
     }
 
     pub fn kill(&self) -> String {
-        let bytes = self.core.to_bytes();
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        self.core.to_bytes().iter().map(|b| format!("{:02x}", b)).collect()
     }
 
-    pub fn get_attestation(&self) -> String {
-        self.kill()
-    }
+    pub fn get_attestation(&self) -> String { self.kill() }
 
     pub fn rehydrate(&mut self, att: &str) -> bool {
-        if att.len() != 256 {
-            return false;
-        }
+        if att.len() != 256 { return false; }
         let mut bytes = [0u8; 128];
         for i in 0..128 {
-            let hex_byte = &att[i * 2..i * 2 + 2];
-            match u8::from_str_radix(hex_byte, 16) {
+            match u8::from_str_radix(&att[i * 2..i * 2 + 2], 16) {
                 Ok(val) => bytes[i] = val,
                 Err(_) => return false,
             }
